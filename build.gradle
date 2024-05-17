@@ -67,6 +67,10 @@ jar {
 	from("LICENSE") {
 		rename { "${it}_${project.base.archivesName.get()}"}
 	}
+	from('native') {
+		include 'find_biome_at.dll'
+		into 'native'
+	}
 }
 
 // configure the maven publication

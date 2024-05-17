@@ -1,7 +1,6 @@
 package com.example;
 
 import com.mojang.brigadier.CommandDispatcher;
-import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.LongArgumentType;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
@@ -26,7 +25,8 @@ import static net.minecraft.client.render.block.entity.BeaconBlockEntityRenderer
 
 public class ExampleModClient implements ClientModInitializer {
 	public static long worldSeed = 0;
-	private BlockPos beaconPos = null;
+	private BlockPos beaconPos = new BlockPos(0, 0, 0);  // Set beacon position to (0, 0, 0)
+	private EndCityFinder endCityFinder = new EndCityFinder();
 
 	@Override
 	public void onInitializeClient() {
@@ -34,6 +34,14 @@ public class ExampleModClient implements ClientModInitializer {
 
 		// Register render event
 		WorldRenderEvents.BEFORE_DEBUG_RENDER.register(this::onRenderWorld);
+
+		// Register world tick event to set beacon position when the player joins a world
+		ClientTickEvents.START_WORLD_TICK.register(world -> {
+			if (MinecraftClient.getInstance().player != null && world.getTime() == 1) {
+				beaconPos = new BlockPos(0, 0, 0);  // Set beacon position to (0, 0, 0)
+				System.out.println("Beacon beam set at: 0, 0, 0");  // Print to console
+			}
+		});
 	}
 
 	private void registerCommands(CommandDispatcher<FabricClientCommandSource> dispatcher, CommandRegistryAccess registryAccess) {
@@ -45,24 +53,24 @@ public class ExampleModClient implements ClientModInitializer {
 							context.getSource().sendFeedback(Text.literal("Seed set to: " + worldSeed));
 							System.out.println("Seed set to: " + worldSeed);  // Print to console
 							return 1;
-						})));
-		dispatcher.register(ClientCommandManager.literal("beaconbeam")
-				.then(ClientCommandManager.argument("x", DoubleArgumentType.doubleArg())
-						.then(ClientCommandManager.argument("y", DoubleArgumentType.doubleArg())
-								.then(ClientCommandManager.argument("z", DoubleArgumentType.doubleArg())
-										.executes(context -> {
-											double x = DoubleArgumentType.getDouble(context, "x");
-											double y = DoubleArgumentType.getDouble(context, "y");
-											double z = DoubleArgumentType.getDouble(context, "z");
-
-											// Set the beacon position
-											beaconPos = new BlockPos((int) x, (int) y, (int) z);
-
-											context.getSource().sendFeedback(Text.literal("Beacon beam set at: " + x + ", " + y + ", " + z));
-											System.out.println("Beacon beam set at: " + x + ", " + y + ", " + z);  // Print to console
-
-											return 1;
-										})))));
+						}))
+		);
+		dispatcher.register(ClientCommandManager.literal("endcities")
+				.executes(context -> {
+					EndCity[] cities = endCityFinder.findEndCities(worldSeed, 0, 0, 5000);
+					if (cities == null) {
+						context.getSource().sendFeedback(Text.literal("No End Cities found."));
+						System.out.println("No End Cities found.");  // Print to console
+					} else {
+						for (EndCity city : cities) {
+							if (city != null) {
+								context.getSource().sendFeedback(Text.literal("End City at (" + city.getX() + ", " + city.getZ() + "), has ship: " + city.hasShip()));
+								System.out.println("End City at (" + city.getX() + ", " + city.getZ() + "), has ship: " + city.hasShip());  // Print to console
+							}
+						}
+					}
+					return 1;
+				}));
 	}
 
 	private void onRenderWorld(WorldRenderContext context) {
