@@ -34,6 +34,7 @@ public class ExampleModClient implements ClientModInitializer {
 	private BlockPos lastCheckedPos = null;
 	private long lastCheckTime = 0;
 	private static final long CHECK_INTERVAL = 100;
+	private Vec3d prevPlayerPos = null;
 
 	@Override
 	public void onInitializeClient() {
@@ -48,6 +49,7 @@ public class ExampleModClient implements ClientModInitializer {
 			if (client.player != null && world.getTime() == 1) {
 				if (client.player.getWorld().getRegistryKey() == net.minecraft.world.World.END) {
 					checkAndUpdateBeacons();
+					prevPlayerPos = client.player.getPos();
 				}
 			}
 		});
@@ -59,6 +61,9 @@ public class ExampleModClient implements ClientModInitializer {
 				if (currentTime - lastCheckTime >= CHECK_INTERVAL) {
 					checkAndUpdateBeacons();
 					lastCheckTime = currentTime;
+				}
+				if (prevPlayerPos == null) {
+					prevPlayerPos = client.player.getPos();
 				}
 			}
 		});
@@ -74,9 +79,8 @@ public class ExampleModClient implements ClientModInitializer {
 							System.out.println("Seed set to: " + worldSeed);  // Print to console
 							MinecraftClient client = MinecraftClient.getInstance();
 							if (client.player != null) {
-								if (client.player.getWorld().getRegistryKey() == net.minecraft.world.World.END) {
-									checkAndUpdateBeacons();
-								}
+								prevPlayerPos = client.player.getPos();
+								checkAndUpdateBeaconsOverride();
 							}
 							return 1;
 						}))
@@ -88,7 +92,7 @@ public class ExampleModClient implements ClientModInitializer {
 		Vec3d playerPos = client.player.getPos();
 		BlockPos currentPos = new BlockPos((int) playerPos.x, (int) playerPos.y, (int) playerPos.z);
 
-		if (lastCheckedPos == null || currentPos.isWithinDistance(lastCheckedPos, 300.0)) {
+		if (lastCheckedPos == null || !currentPos.isWithinDistance(lastCheckedPos, 300.0)) {
 			lastCheckedPos = currentPos;
 			int centerX = (int) playerPos.x;
 			int centerZ = (int) playerPos.z;
@@ -107,14 +111,45 @@ public class ExampleModClient implements ClientModInitializer {
 		}
 	}
 
-	private void onRenderWorld(WorldRenderContext context) {
-		for (BlockPos beaconPos : beaconPositions) {
-			renderBeaconBeam(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, context.camera().getPos());
-			renderFloatingText(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, context.camera().getPos());
+	private void checkAndUpdateBeaconsOverride() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		Vec3d playerPos = client.player.getPos();
+		BlockPos currentPos = new BlockPos((int) playerPos.x, (int) playerPos.y, (int) playerPos.z);
+
+		lastCheckedPos = currentPos;
+		int centerX = (int) playerPos.x;
+		int centerZ = (int) playerPos.z;
+
+		beaconPositions.clear();  // Clear all existing beacon positions
+		EndCity[] cities = endCityFinder.findEndCities(worldSeed, centerX, centerZ, 2500);
+		if (cities != null) {
+			for (EndCity city : cities) {
+				if (city != null) {
+					BlockPos cityPos = new BlockPos(city.getX(), 0, city.getZ());
+					beaconPositions.add(cityPos);  // Add new beacon position
+					System.out.println("End City at (" + city.getX() + ", " + city.getZ() + "), has ship: " + city.hasShip());  // Print to console
+				}
+			}
 		}
 	}
 
-	private void renderBeaconBeam(MatrixStack matrixStack, VertexConsumerProvider vertexConsumerProvider, BlockPos pos, Vec3d cameraPos) {
+	private void onRenderWorld(WorldRenderContext context) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.player != null) {
+			Vec3d currentPlayerPos = client.player.getPos();
+			if (prevPlayerPos == null) {
+				prevPlayerPos = currentPlayerPos;
+			}
+			Vec3d interpolatedPlayerPos = interpolate(prevPlayerPos, currentPlayerPos, client.getTickDelta());
+			for (BlockPos beaconPos : beaconPositions) {
+				renderBeaconBeam(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, interpolatedPlayerPos);
+				renderFloatingText(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, interpolatedPlayerPos);
+			}
+			prevPlayerPos = currentPlayerPos;
+		}
+	}
+
+	private void renderBeaconBeam(MatrixStack matrixStack, VertexConsumerProvider vertexConsumerProvider, BlockPos pos, Vec3d interpolatedPlayerPos) {
 		MinecraftClient client = MinecraftClient.getInstance();
 
 		if (client.player != null && client.player.getWorld().getRegistryKey() == net.minecraft.world.World.END) {
@@ -122,7 +157,7 @@ public class ExampleModClient implements ClientModInitializer {
 
 			// Translate the matrixStack to the beacon position
 			matrixStack.push();
-			matrixStack.translate(pos.getX() - cameraPos.x, pos.getY() - cameraPos.y, pos.getZ() - cameraPos.z);
+			matrixStack.translate(pos.getX() - interpolatedPlayerPos.x, pos.getY() - interpolatedPlayerPos.y, pos.getZ() - interpolatedPlayerPos.z);
 
 			BeaconBlockEntityRenderer.renderBeam(
 					matrixStack,
@@ -142,23 +177,30 @@ public class ExampleModClient implements ClientModInitializer {
 		}
 	}
 
-	private void renderFloatingText(MatrixStack matrixStack, VertexConsumerProvider vertexConsumerProvider, BlockPos pos, Vec3d cameraPos) {
+	private void renderFloatingText(MatrixStack matrixStack, VertexConsumerProvider vertexConsumerProvider, BlockPos pos, Vec3d interpolatedPlayerPos) {
 		MinecraftClient client = MinecraftClient.getInstance();
 		TextRenderer textRenderer = client.textRenderer;
 
-		double x = pos.getX() + 0.5 - cameraPos.x;
-		double y = 120 - cameraPos.y;
-		double z = pos.getZ() + 0.5 - cameraPos.z;
+		// Get the player's position
+		Vec3d playerPos = interpolatedPlayerPos;
 
-		double distance = Math.sqrt(x * x + y * y + z * z);
-		float scale = 0.015F * (float) distance;
-		if (scale > 1.15F) {
-			scale = 1.15F;
-		}
-		y += scale;
+		// Calculate the point 3/4 of the way from the specified position to the player's position
+		double factor = 0.85;
+		double x = (1 - factor) * (pos.getX() + 0.5) + factor * playerPos.x;
+		double y = (1 - factor) * 120 + factor * playerPos.y;
+		double z = (1 - factor) * (pos.getZ() + 0.5) + factor * playerPos.z;
+
+		// Calculate the distance from the camera to the new position
+		double dx = x - interpolatedPlayerPos.x;
+		double dy = y - interpolatedPlayerPos.y;
+		double dz = z - interpolatedPlayerPos.z;
+
+		double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+		float scale = 0.0025F * (float) distance;
+		y += scale * 2;
 
 		matrixStack.push();
-		matrixStack.translate(x, y, z);
+		matrixStack.translate(dx, dy, dz);
 		matrixStack.multiply(client.getEntityRenderDispatcher().getRotation());
 		matrixStack.scale(-scale, -scale, scale);
 		Matrix4f matrix4f = matrixStack.peek().getPositionMatrix();
@@ -174,5 +216,12 @@ public class ExampleModClient implements ClientModInitializer {
 		RenderSystem.enableDepthTest(); // Re-enable depth test
 
 		matrixStack.pop();
+	}
+
+	private Vec3d interpolate(Vec3d start, Vec3d end, float delta) {
+		double x = start.x + (end.x - start.x) * delta;
+		double y = start.y + (end.y - start.y) * delta;
+		double z = start.z + (end.z - start.z) * delta;
+		return new Vec3d(x, y, z);
 	}
 }
