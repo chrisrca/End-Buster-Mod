@@ -1,5 +1,6 @@
 package com.example;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.LongArgumentType;
 import net.fabricmc.api.ClientModInitializer;
@@ -10,14 +11,15 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.render.*;
+import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.render.block.entity.BeaconBlockEntityRenderer;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.command.CommandRegistryAccess;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.Identifier;
 import net.minecraft.util.math.Vec3d;
+import org.joml.Matrix4f;
+import net.minecraft.client.render.VertexConsumerProvider;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -108,6 +110,7 @@ public class ExampleModClient implements ClientModInitializer {
 	private void onRenderWorld(WorldRenderContext context) {
 		for (BlockPos beaconPos : beaconPositions) {
 			renderBeaconBeam(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, context.camera().getPos());
+			renderFloatingText(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, context.camera().getPos());
 		}
 	}
 
@@ -137,5 +140,39 @@ public class ExampleModClient implements ClientModInitializer {
 
 			matrixStack.pop();
 		}
+	}
+
+	private void renderFloatingText(MatrixStack matrixStack, VertexConsumerProvider vertexConsumerProvider, BlockPos pos, Vec3d cameraPos) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		TextRenderer textRenderer = client.textRenderer;
+
+		double x = pos.getX() + 0.5 - cameraPos.x;
+		double y = 120 - cameraPos.y;
+		double z = pos.getZ() + 0.5 - cameraPos.z;
+
+		double distance = Math.sqrt(x * x + y * y + z * z);
+		float scale = 0.015F * (float) distance;
+		if (scale > 1.15F) {
+			scale = 1.15F;
+		}
+		y += scale;
+
+		matrixStack.push();
+		matrixStack.translate(x, y, z);
+		matrixStack.multiply(client.getEntityRenderDispatcher().getRotation());
+		matrixStack.scale(-scale, -scale, scale);
+		Matrix4f matrix4f = matrixStack.peek().getPositionMatrix();
+		int color = 0xFFFFFF; // White color for the text
+
+		RenderSystem.disableDepthTest(); // Disable depth test to render text over everything else
+		RenderSystem.enableBlend(); // Enable blending for transparent text
+		RenderSystem.defaultBlendFunc(); // Use default blend function
+
+		textRenderer.draw("End City", -textRenderer.getWidth("End City") / 2.0F, 0, color, false, matrix4f, vertexConsumerProvider, TextRenderer.TextLayerType.NORMAL, 0, 15728880);
+
+		RenderSystem.disableBlend(); // Disable blending after rendering text
+		RenderSystem.enableDepthTest(); // Re-enable depth test
+
+		matrixStack.pop();
 	}
 }
