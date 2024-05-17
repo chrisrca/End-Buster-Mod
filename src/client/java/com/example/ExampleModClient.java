@@ -21,23 +21,30 @@ import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
 import net.minecraft.client.render.VertexConsumerProvider;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import static net.minecraft.client.render.block.entity.BeaconBlockEntityRenderer.BEAM_TEXTURE;
 
 public class ExampleModClient implements ClientModInitializer {
 	public static long worldSeed = 0;
-	private List<BlockPos> beaconPositions = new ArrayList<>();
+	private Map<BlockPos, Boolean> beaconPositions = new HashMap<>();
 	private EndCityFinder endCityFinder = new EndCityFinder();
 	private BlockPos lastCheckedPos = null;
 	private long lastCheckTime = 0;
 	private static final long CHECK_INTERVAL = 100;
 	private Vec3d prevPlayerPos = null;
+	private Set<BlockPos> visitedCities = new HashSet<>();
+	private static final String VISITED_CITIES_FILE = "visitedcities/visited_cities.txt";
 
 	@Override
 	public void onInitializeClient() {
+		loadSettings();
+
 		ClientCommandRegistrationCallback.EVENT.register(this::registerCommands);
 
 		// Register render event
@@ -65,6 +72,7 @@ public class ExampleModClient implements ClientModInitializer {
 				if (prevPlayerPos == null) {
 					prevPlayerPos = client.player.getPos();
 				}
+				checkVisitedCities();
 			}
 		});
 	}
@@ -78,10 +86,11 @@ public class ExampleModClient implements ClientModInitializer {
 							context.getSource().sendFeedback(Text.literal("Seed set to: " + worldSeed));
 							System.out.println("Seed set to: " + worldSeed);  // Print to console
 							MinecraftClient client = MinecraftClient.getInstance();
-							if (client.player != null) {
+							if (client.player != null && client.player.getWorld().getRegistryKey() == net.minecraft.world.World.END) {
 								prevPlayerPos = client.player.getPos();
 								checkAndUpdateBeaconsOverride();
 							}
+							saveSettings();
 							return 1;
 						}))
 		);
@@ -89,10 +98,36 @@ public class ExampleModClient implements ClientModInitializer {
 
 	private void checkAndUpdateBeacons() {
 		MinecraftClient client = MinecraftClient.getInstance();
-		Vec3d playerPos = client.player.getPos();
-		BlockPos currentPos = new BlockPos((int) playerPos.x, (int) playerPos.y, (int) playerPos.z);
+		if (client.player != null && client.player.getWorld().getRegistryKey() == net.minecraft.world.World.END) {
+			Vec3d playerPos = client.player.getPos();
+			BlockPos currentPos = new BlockPos((int) playerPos.x, (int) playerPos.y, (int) playerPos.z);
 
-		if (lastCheckedPos == null || !currentPos.isWithinDistance(lastCheckedPos, 300.0)) {
+			if (lastCheckedPos == null || !currentPos.isWithinDistance(lastCheckedPos, 300.0)) {
+				lastCheckedPos = currentPos;
+				int centerX = (int) playerPos.x;
+				int centerZ = (int) playerPos.z;
+
+				beaconPositions.clear();  // Clear all existing beacon positions
+				EndCity[] cities = endCityFinder.findEndCities(worldSeed, centerX, centerZ, 2500);
+				if (cities != null) {
+					for (EndCity city : cities) {
+						if (city != null) {
+							BlockPos cityPos = new BlockPos(city.getX(), 0, city.getZ());
+							beaconPositions.put(cityPos, city.hasShip());  // Add new beacon position with ship info
+							System.out.println("End City at (" + city.getX() + ", " + city.getZ() + "), has ship: " + city.hasShip());  // Print to console
+						}
+					}
+				}
+			}
+		}
+	}
+
+	private void checkAndUpdateBeaconsOverride() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.player != null && client.player.getWorld().getRegistryKey() == net.minecraft.world.World.END) {
+			Vec3d playerPos = client.player.getPos();
+			BlockPos currentPos = new BlockPos((int) playerPos.x, (int) playerPos.y, (int) playerPos.z);
+
 			lastCheckedPos = currentPos;
 			int centerX = (int) playerPos.x;
 			int centerZ = (int) playerPos.z;
@@ -103,7 +138,7 @@ public class ExampleModClient implements ClientModInitializer {
 				for (EndCity city : cities) {
 					if (city != null) {
 						BlockPos cityPos = new BlockPos(city.getX(), 0, city.getZ());
-						beaconPositions.add(cityPos);  // Add new beacon position
+						beaconPositions.put(cityPos, city.hasShip());  // Add new beacon position with ship info
 						System.out.println("End City at (" + city.getX() + ", " + city.getZ() + "), has ship: " + city.hasShip());  // Print to console
 					}
 				}
@@ -111,39 +146,36 @@ public class ExampleModClient implements ClientModInitializer {
 		}
 	}
 
-	private void checkAndUpdateBeaconsOverride() {
+	private void checkVisitedCities() {
 		MinecraftClient client = MinecraftClient.getInstance();
-		Vec3d playerPos = client.player.getPos();
-		BlockPos currentPos = new BlockPos((int) playerPos.x, (int) playerPos.y, (int) playerPos.z);
+		if (client.player != null && client.player.getWorld().getRegistryKey() == net.minecraft.world.World.END) {
+			Vec3d playerPos = client.player.getPos();
+			List<BlockPos> newlyVisited = beaconPositions.keySet().stream()
+					.filter(pos -> !visitedCities.contains(pos) && pos.isWithinDistance(playerPos, 200))
+					.collect(Collectors.toList());
 
-		lastCheckedPos = currentPos;
-		int centerX = (int) playerPos.x;
-		int centerZ = (int) playerPos.z;
-
-		beaconPositions.clear();  // Clear all existing beacon positions
-		EndCity[] cities = endCityFinder.findEndCities(worldSeed, centerX, centerZ, 2500);
-		if (cities != null) {
-			for (EndCity city : cities) {
-				if (city != null) {
-					BlockPos cityPos = new BlockPos(city.getX(), 0, city.getZ());
-					beaconPositions.add(cityPos);  // Add new beacon position
-					System.out.println("End City at (" + city.getX() + ", " + city.getZ() + "), has ship: " + city.hasShip());  // Print to console
-				}
+			if (!newlyVisited.isEmpty()) {
+				visitedCities.addAll(newlyVisited);
+				saveVisitedCities();
 			}
 		}
 	}
 
 	private void onRenderWorld(WorldRenderContext context) {
 		MinecraftClient client = MinecraftClient.getInstance();
-		if (client.player != null) {
+		if (client.player != null && client.player.getWorld().getRegistryKey() == net.minecraft.world.World.END) {
 			Vec3d currentPlayerPos = client.player.getPos();
 			if (prevPlayerPos == null) {
 				prevPlayerPos = currentPlayerPos;
 			}
 			Vec3d interpolatedPlayerPos = interpolate(prevPlayerPos, currentPlayerPos, client.getTickDelta());
-			for (BlockPos beaconPos : beaconPositions) {
-				renderBeaconBeam(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, interpolatedPlayerPos);
-				renderFloatingText(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, interpolatedPlayerPos);
+			for (Map.Entry<BlockPos, Boolean> entry : beaconPositions.entrySet()) {
+				BlockPos beaconPos = entry.getKey();
+				boolean hasShip = entry.getValue();
+				if (!visitedCities.contains(beaconPos)) {
+					renderBeaconBeam(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, interpolatedPlayerPos);
+					renderFloatingText(Objects.requireNonNull(context.matrixStack()), context.consumers(), beaconPos, interpolatedPlayerPos, hasShip);
+				}
 			}
 			prevPlayerPos = currentPlayerPos;
 		}
@@ -177,7 +209,7 @@ public class ExampleModClient implements ClientModInitializer {
 		}
 	}
 
-	private void renderFloatingText(MatrixStack matrixStack, VertexConsumerProvider vertexConsumerProvider, BlockPos pos, Vec3d interpolatedPlayerPos) {
+	private void renderFloatingText(MatrixStack matrixStack, VertexConsumerProvider vertexConsumerProvider, BlockPos pos, Vec3d interpolatedPlayerPos, boolean hasShip) {
 		MinecraftClient client = MinecraftClient.getInstance();
 		TextRenderer textRenderer = client.textRenderer;
 
@@ -204,13 +236,15 @@ public class ExampleModClient implements ClientModInitializer {
 		matrixStack.multiply(client.getEntityRenderDispatcher().getRotation());
 		matrixStack.scale(-scale, -scale, scale);
 		Matrix4f matrix4f = matrixStack.peek().getPositionMatrix();
-		int color = 0xFFFFFF; // White color for the text
+
+		String text = String.format("(%d, %d)", pos.getX(), pos.getZ());
+		int color = hasShip ? 0x00FF00 : 0xFF0000; // Green if it has a ship, red if it doesn't
 
 		RenderSystem.disableDepthTest(); // Disable depth test to render text over everything else
 		RenderSystem.enableBlend(); // Enable blending for transparent text
 		RenderSystem.defaultBlendFunc(); // Use default blend function
 
-		textRenderer.draw("End City", -textRenderer.getWidth("End City") / 2.0F, 0, color, false, matrix4f, vertexConsumerProvider, TextRenderer.TextLayerType.NORMAL, 0, 15728880);
+		textRenderer.draw(text, -textRenderer.getWidth(text) / 2.0F, 0, color, false, matrix4f, vertexConsumerProvider, TextRenderer.TextLayerType.NORMAL, 0, 15728880);
 
 		RenderSystem.disableBlend(); // Disable blending after rendering text
 		RenderSystem.enableDepthTest(); // Re-enable depth test
@@ -223,5 +257,80 @@ public class ExampleModClient implements ClientModInitializer {
 		double y = start.y + (end.y - start.y) * delta;
 		double z = start.z + (end.z - start.z) * delta;
 		return new Vec3d(x, y, z);
+	}
+
+	private void saveVisitedCities() {
+		File file = new File(MinecraftClient.getInstance().runDirectory, VISITED_CITIES_FILE);
+		file.getParentFile().mkdirs();
+
+		try (FileWriter writer = new FileWriter(file)) {
+			Map<Long, Set<BlockPos>> citiesBySeed = new HashMap<>();
+			citiesBySeed.put(worldSeed, visitedCities);
+			for (Map.Entry<Long, Set<BlockPos>> entry : citiesBySeed.entrySet()) {
+				writer.write("Seed: " + entry.getKey() + "\n");
+				for (BlockPos pos : entry.getValue()) {
+					writer.write(pos.getX() + "," + pos.getZ() + "\n");
+				}
+				writer.write("\n");
+			}
+			System.out.println("Visited cities saved to " + file.getPath());
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+
+	private void loadVisitedCities() {
+		File file = new File(MinecraftClient.getInstance().runDirectory, VISITED_CITIES_FILE);
+
+		if (file.exists()) {
+			try {
+				List<String> lines = Files.readAllLines(file.toPath());
+				long currentSeed = -1;
+				for (String line : lines) {
+					if (line.startsWith("Seed: ")) {
+						currentSeed = Long.parseLong(line.substring(6));
+					} else if (currentSeed == worldSeed && !line.trim().isEmpty()) {
+						String[] parts = line.split(",");
+						int x = Integer.parseInt(parts[0]);
+						int z = Integer.parseInt(parts[1]);
+						visitedCities.add(new BlockPos(x, 0, z));
+					}
+				}
+				System.out.println("Visited cities loaded from " + file.getPath());
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		} else {
+			System.out.println("Visited cities file not found: " + file.getPath());
+		}
+	}
+
+	private void saveSettings() {
+		File file = new File(MinecraftClient.getInstance().runDirectory, "settings/lastseed.txt");
+		file.getParentFile().mkdirs();
+
+		try (FileWriter writer = new FileWriter(file)) {
+			writer.write(String.valueOf(worldSeed));
+			System.out.println("Last seed saved to " + file.getPath());
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+
+	private void loadSettings() {
+		File file = new File(MinecraftClient.getInstance().runDirectory, "settings/lastseed.txt");
+
+		if (file.exists()) {
+			try {
+				String content = new String(Files.readAllBytes(file.toPath()));
+				worldSeed = Long.parseLong(content);
+				System.out.println("Loaded seed: " + worldSeed);
+				loadVisitedCities();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		} else {
+			System.out.println("Settings file not found: " + file.getPath());
+		}
 	}
 }
